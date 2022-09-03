@@ -1,48 +1,82 @@
-const { gql } = require('apollo-server-express');
+const { AuthenticationError } = require("apollo-server-express");
+const { User } = require("../models");
+const { signToken } = require("../utils/auth");
 
-const typeDefs = gql`
-  type User {
-    _id: ID
-    username: String!
-    email: String!
-    bookCount: Int
-    savedBooks: [Book]
-  }
+const resolvers = {
+  Query: {
+    me: async (parent, args, context) => {
+      if (context.data) {
+        return User.findOne({ _id: context.data._id }).populate("savedBooks");
+      }
+      throw new AuthenticationError("You have to be logged in in order to save books!");
+    },
+  },
 
-  type Book {
-    _id: ID!
-    bookId: String!
-    authors: [String]
-    description: String!
-    image: String
-    link: String!
-    title: String!
-  }
+  Mutation: {
+    //Create user
+    addUser: async (parent, { username, email, password }, context) => {
+      const user = await User.create({ username, email, password });
+      if (!user) {
+        return res.status(400).json({ message: "Something went wrong. Please try again!" });
+      }
+      const token = signToken(user);
 
-  input BookInput {
-    bookId: String!
-    authors: [String]
-    description: String!
-    image: String
-    link: String!
-    title: String!
-  }
+      return { token, user };
+    },
 
-  type Auth {
-    token: ID!
-    user: User
-  }
+    login: async (parent, { email, password }) => {
+      const user = await User.findOne({ email });
 
-  type Query {
-    me: User
-  }
+      if (!user) {
+        throw new AuthenticationError("Unable to locate a user with this email address!");
+      }
 
-  type Mutation {
-    login(email: String!, password: String!): Auth
-    addUser(username: String!, email: String!, password: String!): Auth
-    saveBook(book: BookInput!): User!
-    removeBook(bookId: String!): User
-  }
-`;
+      const correctPw = await user.isCorrectPassword(password);
 
-module.exports = typeDefs;
+      if (!correctPw) {
+        throw new AuthenticationError("Incorrect credentials, please try again.");
+      }
+
+      const token = signToken(user);
+
+      return { token, user };
+    },
+
+    saveBook: async (parent, { book }, context) => {
+      try {
+
+        const savedBooks = await User.findOneAndUpdate(
+          { _id: context.data._id },
+          { $addToSet: { savedBooks: book } },
+          { new: true }
+        );
+        return savedBooks;
+      } catch (err) {
+        console.log(err);
+        return err;
+      }
+    },
+
+    removeBook: async (parent, { bookId }, context) => {
+      try {
+        if (!context.data)
+          throw new AuthenticationError("You need to be logged in!");
+
+        const updatedUser = await User.findOneAndUpdate(
+          { _id: context.data._id },
+          { $pull: { savedBooks: { bookId: bookId } } },
+          { new: true }
+        );
+        if (!updatedUser) {
+          return { message: "Something went wrong.. please try again." };
+        }
+        return updatedUser;
+      } catch (err) {
+        console.log(err);
+        return err;
+      }
+    },
+  },
+};
+
+module.exports = resolvers;
